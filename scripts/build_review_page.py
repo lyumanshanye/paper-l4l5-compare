@@ -59,6 +59,9 @@ PAGE = r'''<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>论文 L5 双模型效果对比</title>
+<link rel="stylesheet" href="assets/katex/katex.min.css">
+<script src="assets/katex/katex.min.js"></script>
+<script src="assets/katex/auto-render.min.js"></script>
 <style>__STYLE__
 .tabbar,.reportlink,.guide-chip,.guide-pop{display:none!important}
 .shell{grid-template-columns:300px minmax(0,1fr)}
@@ -71,6 +74,8 @@ nav.rail{top:0;height:100vh}
 .mcard{width:100%;max-width:none;flex:none}
 .source-link{color:var(--accent);text-decoration:none}
 .source-link:hover{text-decoration:underline}
+.difftext .katex-display,.orig .katex-display{overflow-x:auto;overflow-y:hidden;padding:6px 0;margin:.6em 0}
+.difftext .katex,.orig .katex{font-size:1em}
 @media(max-width:1000px){.strip{grid-template-columns:1fr}}
 @media(max-width:760px){.shell{grid-template-columns:1fr}nav.rail{height:auto}.mcard{width:100%}}
 </style>
@@ -103,6 +108,7 @@ const DATA=JSON.parse($("payload").textContent), BOOKS=DATA.books, ORDER=DATA.mo
 const rail=$("rail"), main=$("main");
 let cur=0, renderSeq=0;
 const diffCache=new Map();
+const MATH_OPTIONS={delimiters:[{left:"$$",right:"$$",display:true},{left:"\\[",right:"\\]",display:true},{left:"\\(",right:"\\)",display:false},{left:"$",right:"$",display:false}],throwOnError:false,strict:"ignore"};
 const pad2=n=>String(n).padStart(2,"0");
 const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 (function(){
@@ -110,7 +116,34 @@ const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>
   function paint(){const dark=root.dataset.theme?root.dataset.theme==="dark":matchMedia("(prefers-color-scheme:dark)").matches;$("themeicon").textContent=dark?"☾":"☀";$("themelabel").textContent=dark?"深色":"浅色"}
   $("themebtn").onclick=()=>{const dark=root.dataset.theme?root.dataset.theme==="dark":matchMedia("(prefers-color-scheme:dark)").matches;root.dataset.theme=dark?"light":"dark";paint()};paint();
 })();
-function tokenize(s){return String(s??"").match(/\s+|[^\s]+/g)||[]}
+function mathEnd(text,start){
+  let close="",cursor=0;
+  if(text.startsWith("$$",start)){close="$$";cursor=start+2}
+  else if(text.startsWith("\\[",start)){close="\\]";cursor=start+2}
+  else if(text.startsWith("\\(",start)){close="\\)";cursor=start+2}
+  else if(text[start]==="$"&&(start===0||text[start-1]!=="\\")){close="$";cursor=start+1}
+  else return -1;
+  while(cursor<text.length){
+    const found=text.indexOf(close,cursor);
+    if(found<0)return -1;
+    if(found===0||text[found-1]!=="\\")return found+close.length;
+    cursor=found+close.length;
+  }
+  return -1;
+}
+function tokenize(value){
+  const text=String(value??""),tokens=[];
+  let cursor=0;
+  while(cursor<text.length){
+    const formulaEnd=mathEnd(text,cursor);
+    if(formulaEnd>cursor){tokens.push(text.slice(cursor,formulaEnd));cursor=formulaEnd;continue}
+    if(/\s/.test(text[cursor])){let end=cursor+1;while(end<text.length&&/\s/.test(text[end]))end++;tokens.push(text.slice(cursor,end));cursor=end;continue}
+    let end=cursor+1;
+    while(end<text.length&&!/\s/.test(text[end])&&mathEnd(text,end)<0)end++;
+    tokens.push(text.slice(cursor,end));cursor=end;
+  }
+  return tokens;
+}
 function normKey(t){if(/^\s+$/.test(t))return " ";return t.replace(/[“”„‟]/g,'"').replace(/[‘’‚‛]/g,"'").replace(/[–—―−]/g,"-")}
 function isWord(t){return !/^\s+$/.test(t)}
 function diffTokens(aStr,bStr){
@@ -126,6 +159,15 @@ function diffTokens(aStr,bStr){
   const result={ops,del,ins};diffCache.set(cacheKey,result);return result;
 }
 function renderDiff(diff,level){const cls=level==="l4"?"df-ins-l4":"df-ins-l5";return diff.ops.map(op=>op.t==="eq"?esc(op.s):op.t==="del"?'<del class="df-del">'+esc(op.s)+'</del>':'<span class="'+cls+'">'+esc(op.s)+'</span>').join("")}
+function renderMath(root){if(typeof renderMathInElement==="function")renderMathInElement(root,MATH_OPTIONS)}
+function stripDanglingMath(value){
+  const text=String(value??""),trimmed=text.trimEnd();
+  for(const [open,close] of [["\\(","\\)"],["\\[","\\]"]]){
+    const start=trimmed.lastIndexOf(open);
+    if(start>=0&&trimmed.indexOf(close,start+open.length)<0&&trimmed.length-start<=8)return trimmed.slice(0,start).trimEnd();
+  }
+  return text;
+}
 function buildRail(){
   BOOKS.forEach((book,index)=>{const button=document.createElement("button");button.type="button";button.className="bk hard";button.innerHTML='<span class="n">'+pad2(book.idx)+'</span><span><span class="dm" title="'+esc(book.title)+'">'+esc(book.title)+'</span><span class="src">'+esc(book.source)+'</span></span>';button.onclick=()=>select(index);rail.appendChild(button)});
 }
@@ -136,9 +178,10 @@ function render(){
   main.innerHTML='<div class="bookhead"><div class="bighash">'+pad2(book.idx)+'</div><div class="meta"><div class="titlerow"><span class="dombadge">'+esc(book.domain||"Academic paper")+'</span><span class="srcmini">'+esc(book.source)+'</span></div><div class="booktitle">'+esc(book.title)+'</div></div><div class="nav-arrows"><button class="arrow" id="prevb" '+(cur===0?"disabled":"")+'>← 上一篇</button><button class="arrow" id="nextb" '+(cur===BOOKS.length-1?"disabled":"")+'>下一篇 →</button></div></div>'+ 
   '<div class="stagebar"><span class="stage-hint"><a class="source-link" target="_blank" rel="noopener" href="'+esc(meta.pdf_url||"")+'">公开 PDF</a> · '+tokenLabel+' token</span></div>'+ 
   '<div class="orig" id="origp"><div class="panel-tag"><span class="step">①</span> L5 输入 · 论文正文段</div><div class="body">'+esc(book.seg)+'</div><button class="moretog" id="origmore">展开全文 ▾</button></div><div class="strip-wrap"><div class="strip stagewrap" id="strip"></div></div>';
+  renderMath($("origp").querySelector(".body"));
   $("prevb").onclick=()=>select(cur-1);$("nextb").onclick=()=>select(cur+1);$("origmore").onclick=()=>{const open=$("origp").classList.toggle("open");$("origmore").textContent=open?"收起 ▴":"展开全文 ▾"};
   const strip=$("strip");
-  ORDER.forEach(model=>{const value=(book.models[model]||{}).l5||"",card=document.createElement("div");card.className="mcard";card.innerHTML='<div class="mcard-h"><span class="mname">'+esc(model)+'</span><span class="badge base">对比模型</span></div>';const stage=document.createElement("div");stage.className="stage l5";stage.innerHTML='<div class="stage-h"><span class="step">②</span>过 L5 · 认知重写<span class="stat" data-role="stat">…</span></div><div class="difftext" data-role="body"><span class="calc">计算 diff…</span></div>';card.appendChild(stage);strip.appendChild(card);setTimeout(()=>{if(seq!==renderSeq)return;if(!value){stage.querySelector('[data-role="body"]').innerHTML='<div class="waitbox">暂无 L5 结果</div>';stage.querySelector('[data-role="stat"]').textContent="无结果";return}const diff=diffTokens(book.seg,value);stage.querySelector('[data-role="body"]').innerHTML=renderDiff(diff,"l5");stage.querySelector('[data-role="stat"]').textContent="+"+diff.ins+" 新增 · −"+diff.del+" 删"},0)});
+  ORDER.forEach(model=>{const value=stripDanglingMath((book.models[model]||{}).l5||""),card=document.createElement("div");card.className="mcard";card.innerHTML='<div class="mcard-h"><span class="mname">'+esc(model)+'</span><span class="badge base">对比模型</span></div>';const stage=document.createElement("div");stage.className="stage l5";stage.innerHTML='<div class="stage-h"><span class="step">②</span>过 L5 · 认知重写<span class="stat" data-role="stat">…</span></div><div class="difftext" data-role="body"><span class="calc">计算 diff…</span></div>';card.appendChild(stage);strip.appendChild(card);setTimeout(()=>{if(seq!==renderSeq)return;if(!value){stage.querySelector('[data-role="body"]').innerHTML='<div class="waitbox">暂无 L5 结果</div>';stage.querySelector('[data-role="stat"]').textContent="无结果";return}const diff=diffTokens(book.seg,value),body=stage.querySelector('[data-role="body"]');body.innerHTML=renderDiff(diff,"l5");renderMath(body);stage.querySelector('[data-role="stat"]').textContent="+"+diff.ins+" 新增 · −"+diff.del+" 删"},0)});
 }
 buildRail();
 const match=/book=(\d+)/.exec(location.hash);if(match){const found=BOOKS.findIndex(book=>book.idx===+match[1]);if(found>=0)cur=found}select(cur,false);
