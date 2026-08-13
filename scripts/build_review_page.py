@@ -71,6 +71,7 @@ const $=id=>document.getElementById(id);
 const DATA=JSON.parse($("payload").textContent), BOOKS=DATA.books, ORDER=DATA.model_order;
 const rail=$("rail"), main=$("main");
 let cur=0, mode="all", renderSeq=0;
+const diffCache=new Map();
 const pad2=n=>String(n).padStart(2,"0");
 const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 (function(){
@@ -82,12 +83,16 @@ function tokenize(s){return String(s??"").match(/\s+|[^\s]+/g)||[]}
 function normKey(t){if(/^\s+$/.test(t))return " ";return t.replace(/[“”„‟]/g,'"').replace(/[‘’‚‛]/g,"'").replace(/[–—―−]/g,"-")}
 function isWord(t){return !/^\s+$/.test(t)}
 function diffTokens(aStr,bStr){
+  const cacheKey=aStr+"\u0000"+bStr;
+  const cached=diffCache.get(cacheKey);
+  if(cached)return cached;
   const A=tokenize(aStr),B=tokenize(bStr),n=A.length,m=B.length,ak=A.map(normKey),bk=B.map(normKey),W=m+1;
   const dp=new Uint16Array((n+1)*W);
   for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)dp[i*W+j]=ak[i]===bk[j]?dp[(i+1)*W+j+1]+1:Math.max(dp[(i+1)*W+j],dp[i*W+j+1]);
   const ops=[];let del=0,ins=0,i=0,j=0;const push=(t,s)=>{const last=ops[ops.length-1];if(last&&last.t===t)last.s+=s;else ops.push({t,s})};
   while(i<n&&j<m){if(ak[i]===bk[j]){push("eq",A[i++]);j++}else if(dp[(i+1)*W+j]>=dp[i*W+j+1]){push("del",A[i]);if(isWord(A[i]))del++;i++}else{push("ins",B[j]);if(isWord(B[j]))ins++;j++}}
-  while(i<n){push("del",A[i]);if(isWord(A[i]))del++;i++}while(j<m){push("ins",B[j]);if(isWord(B[j]))ins++;j++}return{ops,del,ins};
+  while(i<n){push("del",A[i]);if(isWord(A[i]))del++;i++}while(j<m){push("ins",B[j]);if(isWord(B[j]))ins++;j++}
+  const result={ops,del,ins};diffCache.set(cacheKey,result);return result;
 }
 function renderDiff(diff,level){const cls=level==="l4"?"df-ins-l4":"df-ins-l5";return diff.ops.map(op=>op.t==="eq"?esc(op.s):op.t==="del"?'<del class="df-del">'+esc(op.s)+'</del>':'<span class="'+cls+'">'+esc(op.s)+'</span>').join("")}
 function buildRail(){
