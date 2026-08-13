@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import html
 import json
 import re
 from pathlib import Path
@@ -9,12 +10,25 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--template", required=True, type=Path)
     parser.add_argument("--results", required=True, type=Path)
+    parser.add_argument("--compare-results", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
 
     template = args.template.read_text(encoding="utf-8")
     style = re.search(r"<style>(.*?)</style>", template, flags=re.DOTALL).group(1)
     data = json.loads(args.results.read_text(encoding="utf-8"))
+    if args.compare_results:
+        comparison = json.loads(args.compare_results.read_text(encoding="utf-8"))
+        comparison_model = comparison["model"]
+        comparison_books = {book["idx"]: book for book in comparison["books"]}
+        missing = [book["idx"] for book in data["books"] if book["idx"] not in comparison_books]
+        if missing:
+            raise RuntimeError(f"comparison results missing paper IDs: {missing}")
+        if comparison_model not in data["model_order"]:
+            data["model_order"].append(comparison_model)
+        for book in data["books"]:
+            result = comparison_books[book["idx"]]
+            book.setdefault("models", {})[comparison_model] = {"l5": result.get("l5", "")}
     model_order = data.get("model_order", [])
     data["books"] = [
         {
@@ -29,9 +43,14 @@ def main():
         for book in data.get("books", [])
     ]
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
-    html = PAGE.replace("__STYLE__", style).replace("__PAYLOAD__", payload)
-    args.out.write_text(html, encoding="utf-8")
-    print(f"saved -> {args.out} ({len(html)} bytes)")
+    model_names = " vs ".join(model_order)
+    page = (
+        PAGE.replace("__STYLE__", style)
+        .replace("__PAYLOAD__", payload)
+        .replace("__MODEL_NAMES__", html.escape(model_names))
+    )
+    args.out.write_text(page, encoding="utf-8")
+    print(f"saved -> {args.out} ({len(page)} bytes)")
 
 
 PAGE = r'''<!doctype html>
@@ -39,7 +58,7 @@ PAGE = r'''<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>论文 L5 DeepSeek 效果审阅</title>
+<title>论文 L5 双模型效果对比</title>
 <style>__STYLE__
 .tabbar,.reportlink,.guide-chip,.guide-pop{display:none!important}
 .shell{grid-template-columns:300px minmax(0,1fr)}
@@ -48,19 +67,20 @@ nav.rail{top:0;height:100vh}
 .bk{grid-template-columns:28px minmax(0,1fr)}
 .bk .dm{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;overflow:hidden}
 .bk .src{font-size:9.5px}
-.strip{display:block;min-width:0}
+.strip{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0}
 .mcard{width:100%;max-width:none;flex:none}
 .source-link{color:var(--accent);text-decoration:none}
 .source-link:hover{text-decoration:underline}
-@media(max-width:760px){.shell{grid-template-columns:1fr}nav.rail{height:auto}.strip{display:block;min-width:0}.mcard{width:100%}}
+@media(max-width:1000px){.strip{grid-template-columns:1fr}}
+@media(max-width:760px){.shell{grid-template-columns:1fr}nav.rail{height:auto}.mcard{width:100%}}
 </style>
 </head>
 <body>
 <header class="mast">
   <div class="mast-row">
     <div class="brand">
-      <h1>论文洗数据管线 · <span class="pipe">L5</span> DeepSeek 审阅台</h1>
-      <p>数据＝<b>K202607100001 论文批次</b>，固定种子抽取 30 篇可公开读取的真实论文。每篇精确定位标题与正文边界，抽取一个最多 <b>1024 token</b> 的论文段，直接执行 <b>L5 认知补全重写</b>。模型＝<b>DeepSeek-V4-Flash</b>。</p>
+      <h1>论文洗数据管线 · <span class="pipe">L5</span> 双模型审阅台</h1>
+      <p>数据＝<b>K202607100001 论文批次</b>，固定种子抽取 30 篇可公开读取的真实论文。每篇使用完全相同的正文段与 <b>L5 认知补全 Prompt</b>。模型＝<b>__MODEL_NAMES__</b>。</p>
       <p class="tabnote">黄色＝L5 新增或改写，灰色删除线＝L5 删除。每条可由 CSV 行号、DOI 和公开 PDF 追溯。</p>
     </div>
     <div class="mast-tools">
@@ -118,7 +138,7 @@ function render(){
   '<div class="orig" id="origp"><div class="panel-tag"><span class="step">①</span> L5 输入 · 论文正文段</div><div class="body">'+esc(book.seg)+'</div><button class="moretog" id="origmore">展开全文 ▾</button></div><div class="strip-wrap"><div class="strip stagewrap" id="strip"></div></div>';
   $("prevb").onclick=()=>select(cur-1);$("nextb").onclick=()=>select(cur+1);$("origmore").onclick=()=>{const open=$("origp").classList.toggle("open");$("origmore").textContent=open?"收起 ▴":"展开全文 ▾"};
   const strip=$("strip");
-  ORDER.forEach(model=>{const value=(book.models[model]||{}).l5||"",card=document.createElement("div");card.className="mcard";card.innerHTML='<div class="mcard-h"><span class="mname">'+esc(model)+'</span><span class="badge base">当前模型</span></div>';const stage=document.createElement("div");stage.className="stage l5";stage.innerHTML='<div class="stage-h"><span class="step">②</span>过 L5 · 认知重写<span class="stat" data-role="stat">…</span></div><div class="difftext" data-role="body"><span class="calc">计算 diff…</span></div>';card.appendChild(stage);strip.appendChild(card);setTimeout(()=>{if(seq!==renderSeq)return;if(!value){stage.querySelector('[data-role="body"]').innerHTML='<div class="waitbox">暂无 L5 结果</div>';stage.querySelector('[data-role="stat"]').textContent="无结果";return}const diff=diffTokens(book.seg,value);stage.querySelector('[data-role="body"]').innerHTML=renderDiff(diff,"l5");stage.querySelector('[data-role="stat"]').textContent="+"+diff.ins+" 新增 · −"+diff.del+" 删"},0)});
+  ORDER.forEach(model=>{const value=(book.models[model]||{}).l5||"",card=document.createElement("div");card.className="mcard";card.innerHTML='<div class="mcard-h"><span class="mname">'+esc(model)+'</span><span class="badge base">对比模型</span></div>';const stage=document.createElement("div");stage.className="stage l5";stage.innerHTML='<div class="stage-h"><span class="step">②</span>过 L5 · 认知重写<span class="stat" data-role="stat">…</span></div><div class="difftext" data-role="body"><span class="calc">计算 diff…</span></div>';card.appendChild(stage);strip.appendChild(card);setTimeout(()=>{if(seq!==renderSeq)return;if(!value){stage.querySelector('[data-role="body"]').innerHTML='<div class="waitbox">暂无 L5 结果</div>';stage.querySelector('[data-role="stat"]').textContent="无结果";return}const diff=diffTokens(book.seg,value);stage.querySelector('[data-role="body"]').innerHTML=renderDiff(diff,"l5");stage.querySelector('[data-role="stat"]').textContent="+"+diff.ins+" 新增 · −"+diff.del+" 删"},0)});
 }
 buildRail();
 const match=/book=(\d+)/.exec(location.hash);if(match){const found=BOOKS.findIndex(book=>book.idx===+match[1]);if(found>=0)cur=found}select(cur,false);
