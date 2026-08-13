@@ -15,6 +15,19 @@ def main():
     template = args.template.read_text(encoding="utf-8")
     style = re.search(r"<style>(.*?)</style>", template, flags=re.DOTALL).group(1)
     data = json.loads(args.results.read_text(encoding="utf-8"))
+    model_order = data.get("model_order", [])
+    data["books"] = [
+        {
+            **book,
+            "models": {
+                model: {
+                    "l5": (book.get("models", {}).get(model) or {}).get("l5", "")
+                }
+                for model in model_order
+            },
+        }
+        for book in data.get("books", [])
+    ]
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
     html = PAGE.replace("__STYLE__", style).replace("__PAYLOAD__", payload)
     args.out.write_text(html, encoding="utf-8")
@@ -26,7 +39,7 @@ PAGE = r'''<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>论文 L4 · L5 DeepSeek 效果审阅</title>
+<title>论文 L5 DeepSeek 效果审阅</title>
 <style>__STYLE__
 .tabbar,.reportlink,.guide-chip,.guide-pop{display:none!important}
 .shell{grid-template-columns:300px minmax(0,1fr)}
@@ -46,15 +59,13 @@ nav.rail{top:0;height:100vh}
 <header class="mast">
   <div class="mast-row">
     <div class="brand">
-      <h1>论文洗数据管线 · <span class="pipe">L4 / L5</span> DeepSeek 审阅台</h1>
-      <p>数据＝<b>K202607100001 论文批次</b>，固定种子抽取 30 篇可公开读取的真实论文。每篇精确定位标题与正文边界，抽取一个最多 <b>1024 token</b> 的论文段；同一段分别执行 <b>L4 生成式清洗</b>与 <b>L5 认知补全重写</b>。模型＝<b>DeepSeek-V4-Flash</b>。</p>
-      <p class="tabnote">红＝删除，绿＝L4 修正，黄＝L5 新增。每条可由 CSV 行号、DOI 和公开 PDF 追溯。</p>
+      <h1>论文洗数据管线 · <span class="pipe">L5</span> DeepSeek 审阅台</h1>
+      <p>数据＝<b>K202607100001 论文批次</b>，固定种子抽取 30 篇可公开读取的真实论文。每篇精确定位标题与正文边界，抽取一个最多 <b>1024 token</b> 的论文段，直接执行 <b>L5 认知补全重写</b>。模型＝<b>DeepSeek-V4-Flash</b>。</p>
+      <p class="tabnote">黄色＝L5 新增或改写，灰色删除线＝L5 删除。每条可由 CSV 行号、DOI 和公开 PDF 追溯。</p>
     </div>
     <div class="mast-tools">
       <div class="legend">
-        <span class="lg"><span class="sw d"></span>L4 删除</span>
-        <span class="lg"><span class="sw a"></span>L4 修正</span>
-        <span class="lg"><span class="sw h"></span>L5 新增重写</span>
+        <span class="lg"><span class="sw h"></span>L5 新增 / 改写</span>
       </div>
       <button class="themebtn" id="themebtn" type="button"><span id="themeicon">◐</span><span id="themelabel">主题</span></button>
     </div>
@@ -70,7 +81,7 @@ nav.rail{top:0;height:100vh}
 const $=id=>document.getElementById(id);
 const DATA=JSON.parse($("payload").textContent), BOOKS=DATA.books, ORDER=DATA.model_order;
 const rail=$("rail"), main=$("main");
-let cur=0, mode="all", renderSeq=0;
+let cur=0, renderSeq=0;
 const diffCache=new Map();
 const pad2=n=>String(n).padStart(2,"0");
 const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -98,20 +109,19 @@ function renderDiff(diff,level){const cls=level==="l4"?"df-ins-l4":"df-ins-l5";r
 function buildRail(){
   BOOKS.forEach((book,index)=>{const button=document.createElement("button");button.type="button";button.className="bk hard";button.innerHTML='<span class="n">'+pad2(book.idx)+'</span><span><span class="dm" title="'+esc(book.title)+'">'+esc(book.title)+'</span><span class="src">'+esc(book.source)+'</span></span>';button.onclick=()=>select(index);rail.appendChild(button)});
 }
-function syncHash(){history.replaceState(null,"","#book="+BOOKS[cur].idx+"&stage="+mode)}
-function select(index){if(index<0||index>=BOOKS.length)return;cur=index;[...rail.querySelectorAll(".bk")].forEach((el,i)=>el.classList.toggle("on",i===index));render();main.scrollIntoView({block:"start"});syncHash()}
+function syncHash(){history.replaceState(null,"","#book="+BOOKS[cur].idx)}
+function select(index,scroll=true){if(index<0||index>=BOOKS.length)return;cur=index;[...rail.querySelectorAll(".bk")].forEach((el,i)=>el.classList.toggle("on",i===index));render();if(scroll)main.scrollIntoView({block:"start"});syncHash()}
 function render(){
   const book=BOOKS[cur],seq=++renderSeq,meta=book.metadata||{},tokenLabel=meta.segment_tokens||1024;
-  main.innerHTML='<div class="bookhead"><div class="bighash">'+pad2(book.idx)+'</div><div class="meta"><div class="titlerow"><span class="dombadge">'+esc(book.domain||"Academic paper")+'</span><span class="srcmini">'+esc(book.source)+'</span></div><div class="booktitle">'+esc(book.title)+'</div></div><div class="nav-arrows"><button class="arrow" id="prevb" '+(cur===0?"disabled":"")+'>← 上一篇</button><button class="arrow" id="nextb" '+(cur===BOOKS.length-1?"disabled":"")+'>下一篇 →</button></div></div>'+
-  '<div class="stagebar"><div class="segctl"><button data-m="all" class="'+(mode==="all"?"on":"")+'">全部 ②＋③</button><button data-m="l4" class="'+(mode==="l4"?"on":"")+'">仅 ② L4</button><button data-m="l5" class="'+(mode==="l5"?"on":"")+'">仅 ③ L5</button></div><span class="stage-hint"><a class="source-link" target="_blank" rel="noopener" href="'+esc(meta.pdf_url||"")+'">公开 PDF</a> · '+tokenLabel+' token</span></div>'+
-  '<div class="orig" id="origp"><div class="panel-tag"><span class="step">①</span> 进 L4 前 · 论文正文段</div><div class="body">'+esc(book.seg)+'</div><button class="moretog" id="origmore">展开全文 ▾</button></div><div class="strip-wrap"><div class="strip stagewrap" id="strip" data-mode="'+mode+'"></div></div>';
+  main.innerHTML='<div class="bookhead"><div class="bighash">'+pad2(book.idx)+'</div><div class="meta"><div class="titlerow"><span class="dombadge">'+esc(book.domain||"Academic paper")+'</span><span class="srcmini">'+esc(book.source)+'</span></div><div class="booktitle">'+esc(book.title)+'</div></div><div class="nav-arrows"><button class="arrow" id="prevb" '+(cur===0?"disabled":"")+'>← 上一篇</button><button class="arrow" id="nextb" '+(cur===BOOKS.length-1?"disabled":"")+'>下一篇 →</button></div></div>'+ 
+  '<div class="stagebar"><span class="stage-hint"><a class="source-link" target="_blank" rel="noopener" href="'+esc(meta.pdf_url||"")+'">公开 PDF</a> · '+tokenLabel+' token</span></div>'+ 
+  '<div class="orig" id="origp"><div class="panel-tag"><span class="step">①</span> L5 输入 · 论文正文段</div><div class="body">'+esc(book.seg)+'</div><button class="moretog" id="origmore">展开全文 ▾</button></div><div class="strip-wrap"><div class="strip stagewrap" id="strip"></div></div>';
   $("prevb").onclick=()=>select(cur-1);$("nextb").onclick=()=>select(cur+1);$("origmore").onclick=()=>{const open=$("origp").classList.toggle("open");$("origmore").textContent=open?"收起 ▴":"展开全文 ▾"};
-  main.querySelectorAll(".segctl button").forEach(button=>button.onclick=()=>{mode=button.dataset.m;main.querySelectorAll(".segctl button").forEach(x=>x.classList.toggle("on",x===button));$("strip").dataset.mode=mode;syncHash()});
   const strip=$("strip");
-  ORDER.forEach(model=>{const value=book.models[model],card=document.createElement("div");card.className="mcard";card.innerHTML='<div class="mcard-h"><span class="mname">'+esc(model)+'</span><span class="badge base">当前模型</span></div>';["l4","l5"].forEach(level=>{const stage=document.createElement("div");stage.className="stage "+level;stage.innerHTML='<div class="stage-h"><span class="step">'+(level==="l4"?"②":"③")+'</span>'+(level==="l4"?"过 L4 · 清洗":"过 L5 · 认知重写")+'<span class="stat" data-role="stat">…</span></div><div class="difftext" data-role="body"><span class="calc">计算 diff…</span></div>';card.appendChild(stage)});strip.appendChild(card);["l4","l5"].forEach(level=>setTimeout(()=>{if(seq!==renderSeq)return;const stage=card.querySelector(".stage."+level),diff=diffTokens(book.seg,value[level]);stage.querySelector('[data-role="body"]').innerHTML=renderDiff(diff,level);stage.querySelector('[data-role="stat"]').textContent=level==="l4"?"−"+diff.del+" 删 · +"+diff.ins+" 改":"+"+diff.ins+" 新增 · −"+diff.del+" 删"},0))});
+  ORDER.forEach(model=>{const value=(book.models[model]||{}).l5||"",card=document.createElement("div");card.className="mcard";card.innerHTML='<div class="mcard-h"><span class="mname">'+esc(model)+'</span><span class="badge base">当前模型</span></div>';const stage=document.createElement("div");stage.className="stage l5";stage.innerHTML='<div class="stage-h"><span class="step">②</span>过 L5 · 认知重写<span class="stat" data-role="stat">…</span></div><div class="difftext" data-role="body"><span class="calc">计算 diff…</span></div>';card.appendChild(stage);strip.appendChild(card);setTimeout(()=>{if(seq!==renderSeq)return;if(!value){stage.querySelector('[data-role="body"]').innerHTML='<div class="waitbox">暂无 L5 结果</div>';stage.querySelector('[data-role="stat"]').textContent="无结果";return}const diff=diffTokens(book.seg,value);stage.querySelector('[data-role="body"]').innerHTML=renderDiff(diff,"l5");stage.querySelector('[data-role="stat"]').textContent="+"+diff.ins+" 新增 · −"+diff.del+" 删"},0)});
 }
 buildRail();
-const match=/book=(\d+)/.exec(location.hash),stage=/stage=(all|l4|l5)/.exec(location.hash);if(stage)mode=stage[1];if(match){const found=BOOKS.findIndex(book=>book.idx===+match[1]);if(found>=0)cur=found}select(cur);
+const match=/book=(\d+)/.exec(location.hash);if(match){const found=BOOKS.findIndex(book=>book.idx===+match[1]);if(found>=0)cur=found}select(cur,false);
 document.addEventListener("keydown",event=>{if(event.key==="ArrowLeft")select(cur-1);if(event.key==="ArrowRight")select(cur+1)});
 </script>
 </body>
