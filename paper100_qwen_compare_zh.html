@@ -261,6 +261,28 @@ nav.rail{top:0;height:100vh}
 .difftext .katex,.orig .katex{font-size:1em}
 @media(max-width:1000px){.strip{grid-template-columns:1fr}}
 @media(max-width:760px){.shell{grid-template-columns:1fr}nav.rail{height:auto}.mcard{width:100%}}
+
+.tabbar,.reportlink,.guide-chip,.guide-pop{display:none!important}
+.shell{grid-template-columns:300px minmax(0,1fr)}
+header.mast{position:relative}
+nav.rail{top:0;height:100vh}
+.bk{grid-template-columns:28px minmax(0,1fr)}
+.bk .dm{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;overflow:hidden}
+.bk .src{font-size:9.5px}
+.strip{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0}
+.mcard{width:100%;max-width:none;flex:none}
+.source-link{color:var(--accent);text-decoration:none}
+.source-link:hover{text-decoration:underline}
+.difftext .katex-display,.orig .katex-display{overflow-x:auto;overflow-y:hidden;padding:6px 0;margin:.6em 0}
+.difftext .katex,.orig .katex{font-size:1em}
+.difftext .md-table-wrap{max-width:100%;overflow-x:auto;margin:10px 0 12px;border:1px solid var(--line);border-radius:7px;white-space:normal}
+.difftext .md-table{width:100%;min-width:520px;border-collapse:collapse;font-family:var(--sans);font-size:12px;line-height:1.45}
+.difftext .md-table th,.difftext .md-table td{min-width:92px;padding:7px 9px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:normal;word-break:normal;overflow-wrap:anywhere}
+.difftext .md-table th{background:var(--surface-3);color:var(--ink);font-weight:700}
+.difftext .md-table tr:last-child td{border-bottom:0}
+.difftext .md-table th:last-child,.difftext .md-table td:last-child{border-right:0}
+@media(max-width:1000px){.strip{grid-template-columns:1fr}}
+@media(max-width:760px){.shell{grid-template-columns:1fr}nav.rail{height:auto}.mcard{width:100%}}
 </style>
 </head>
 <body>
@@ -338,11 +360,97 @@ function diffTokens(aStr,bStr){
   const dp=new Uint16Array((n+1)*W);
   for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)dp[i*W+j]=ak[i]===bk[j]?dp[(i+1)*W+j+1]+1:Math.max(dp[(i+1)*W+j],dp[i*W+j+1]);
   const ops=[];let del=0,ins=0,i=0,j=0;const push=(t,s)=>{const last=ops[ops.length-1];if(last&&last.t===t)last.s+=s;else ops.push({t,s})};
-  while(i<n&&j<m){if(ak[i]===bk[j]){push("eq",A[i++]);j++}else if(dp[(i+1)*W+j]>=dp[i*W+j+1]){push("del",A[i]);if(isWord(A[i]))del++;i++}else{push("ins",B[j]);if(isWord(B[j]))ins++;j++}}
+  while(i<n&&j<m){if(ak[i]===bk[j]){push("eq",B[j]);i++;j++}else if(dp[(i+1)*W+j]>=dp[i*W+j+1]){push("del",A[i]);if(isWord(A[i]))del++;i++}else{push("ins",B[j]);if(isWord(B[j]))ins++;j++}}
   while(i<n){push("del",A[i]);if(isWord(A[i]))del++;i++}while(j<m){push("ins",B[j]);if(isWord(B[j]))ins++;j++}
   const result={ops,del,ins};diffCache.set(cacheKey,result);return result;
 }
-function renderDiff(diff,level){const cls=level==="l4"?"df-ins-l4":"df-ins-l5";return diff.ops.map(op=>op.t==="eq"?esc(op.s):op.t==="del"?'<del class="df-del">'+esc(op.s)+'</del>':'<span class="'+cls+'">'+esc(op.s)+'</span>').join("")}
+function renderOp(type,text,cls){return type==="eq"?esc(text):type==="del"?'<del class="df-del">'+esc(text)+'</del>':'<span class="'+cls+'">'+esc(text)+'</span>'}
+function splitTableRow(line,lineStart){
+  let start=0,end=line.length;
+  while(start<end&&/\s/.test(line[start]))start++;
+  while(end>start&&/\s/.test(line[end-1]))end--;
+  if(line[start]==="|")start++;
+  if(end>start&&line[end-1]==="|"&&line[end-2]!=="\\")end--;
+  const cells=[];let cellStart=start;
+  for(let cursor=start;cursor<=end;cursor++){
+    const boundary=cursor===end||(line[cursor]==="|"&&(cursor===start||line[cursor-1]!=="\\"));
+    if(!boundary)continue;
+    let left=cellStart,right=cursor;
+    while(left<right&&/\s/.test(line[left]))left++;
+    while(right>left&&/\s/.test(line[right-1]))right--;
+    cells.push({text:line.slice(left,right),start:lineStart+left,end:lineStart+right});
+    cellStart=cursor+1;
+  }
+  return cells;
+}
+function tableBlocks(value){
+  const lines=[];let start=0;
+  while(start<=value.length){
+    const newline=value.indexOf("\n",start),rawEnd=newline<0?value.length:newline;
+    const end=rawEnd>start&&value[rawEnd-1]==="\r"?rawEnd-1:rawEnd;
+    lines.push({text:value.slice(start,end),start,end});
+    if(newline<0)break;
+    start=newline+1;
+  }
+  const blocks=[];
+  for(let index=0;index+1<lines.length;index++){
+    if(!lines[index].text.includes("|"))continue;
+    const header=splitTableRow(lines[index].text,lines[index].start);
+    const divider=splitTableRow(lines[index+1].text,lines[index+1].start);
+    if(header.length<2||divider.length!==header.length||!divider.every(cell=>/^:?-{3,}:?$/.test(cell.text)))continue;
+    let last=index+1,row=index+2;
+    while(row<lines.length&&lines[row].text.includes("|")){
+      const cells=splitTableRow(lines[row].text,lines[row].start);
+      if(cells.length<2)break;
+      last=row++;
+    }
+    blocks.push({start:lines[index].start,end:lines[last].end,header,divider,rows:lines.slice(index+2,last+1).map(line=>splitTableRow(line.text,line.start))});
+    index=last;
+  }
+  return blocks;
+}
+function renderMarkedRange(value,start,end,marks,cls){
+  let html="",cursor=start;
+  while(cursor<end){
+    if(value[cursor]==="\\"&&value[cursor+1]==="|"){html+=renderOp(marks[cursor+1]?"ins":"eq","|",cls);cursor+=2;continue}
+    const inserted=marks[cursor],runStart=cursor++;
+    while(cursor<end&&marks[cursor]===inserted&&!(value[cursor]==="\\"&&value[cursor+1]==="|"))cursor++;
+    html+=renderOp(inserted?"ins":"eq",value.slice(runStart,cursor),cls);
+  }
+  return html;
+}
+function renderTable(value,block,marks,cls){
+  const align=block.divider.map(cell=>cell.text.startsWith(":")&&cell.text.endsWith(":")?"center":cell.text.endsWith(":")?"right":"left");
+  const cellsHtml=(cells,tag)=>block.header.map((_,index)=>{const cell=cells[index];return '<'+tag+' style="text-align:'+align[index]+'">'+(cell?renderMarkedRange(value,cell.start,cell.end,marks,cls):"")+'</'+tag+'>'}).join("");
+  return '<div class="md-table-wrap"><table class="md-table"><thead><tr>'+cellsHtml(block.header,"th")+'</tr></thead><tbody>'+block.rows.map(row=>'<tr>'+cellsHtml(row,"td")+'</tr>').join("")+'</tbody></table></div>';
+}
+function renderDiff(diff,value,level){
+  const cls=level==="l4"?"df-ins-l4":"df-ins-l5",blocks=tableBlocks(value);
+  if(!blocks.length)return diff.ops.map(op=>renderOp(op.t,op.s,cls)).join("");
+  const marks=new Uint8Array(value.length);let outputPos=0;
+  for(const op of diff.ops){if(op.t==="del")continue;if(op.t==="ins")marks.fill(1,outputPos,outputPos+op.s.length);outputPos+=op.s.length}
+  let html="",position=0,blockIndex=0;
+  const emitted=new Set();
+  for(const op of diff.ops){
+    while(blockIndex<blocks.length&&blocks[blockIndex].end<=position)blockIndex++;
+    if(op.t==="del"){
+      const block=blocks[blockIndex];
+      if(!block||position<block.start||position>=block.end)html+=renderOp(op.t,op.s,cls);
+      continue;
+    }
+    const opEnd=position+op.s.length;let cursor=position;
+    while(cursor<opEnd){
+      while(blockIndex<blocks.length&&blocks[blockIndex].end<=cursor)blockIndex++;
+      const block=blocks[blockIndex];
+      if(!block||block.start>=opEnd){html+=renderOp(op.t,value.slice(cursor,opEnd),cls);cursor=opEnd;continue}
+      if(cursor<block.start){const end=Math.min(opEnd,block.start);html+=renderOp(op.t,value.slice(cursor,end),cls);cursor=end;continue}
+      if(!emitted.has(block)){html+=renderTable(value,block,marks,cls);emitted.add(block)}
+      cursor=Math.min(opEnd,block.end);
+    }
+    position=opEnd;
+  }
+  return html;
+}
 function renderMath(root){if(typeof renderMathInElement==="function")renderMathInElement(root,MATH_OPTIONS)}
 function stripDanglingMath(value){
   const text=String(value??""),trimmed=text.trimEnd();
@@ -366,7 +474,7 @@ function render(){
   renderMath($("origp").querySelector(".body"));
   $("prevb").onclick=()=>select(cur-1);$("nextb").onclick=()=>select(cur+1);$("origmore").onclick=()=>{const open=$("origp").classList.toggle("open");$("origmore").textContent=open?"收起 ▴":"展开全文 ▾"};
   const strip=$("strip");
-  ORDER.forEach(model=>{const value=stripDanglingMath((book.models[model]||{}).l5||""),card=document.createElement("div");card.className="mcard";card.innerHTML='<div class="mcard-h"><span class="mname">'+esc(model)+'</span><span class="badge base">对比模型</span></div>';const stage=document.createElement("div");stage.className="stage l5";stage.innerHTML='<div class="stage-h"><span class="step">②</span>过 L5 · 认知重写<span class="stat" data-role="stat">…</span></div><div class="difftext" data-role="body"><span class="calc">计算 diff…</span></div>';card.appendChild(stage);strip.appendChild(card);setTimeout(()=>{if(seq!==renderSeq)return;if(!value){stage.querySelector('[data-role="body"]').innerHTML='<div class="waitbox">暂无 L5 结果</div>';stage.querySelector('[data-role="stat"]').textContent="无结果";return}const diff=diffTokens(book.seg,value),body=stage.querySelector('[data-role="body"]');body.innerHTML=renderDiff(diff,"l5");renderMath(body);stage.querySelector('[data-role="stat"]').textContent="+"+diff.ins+" 新增 · −"+diff.del+" 删"},0)});
+  ORDER.forEach(model=>{const value=stripDanglingMath((book.models[model]||{}).l5||""),card=document.createElement("div");card.className="mcard";card.innerHTML='<div class="mcard-h"><span class="mname">'+esc(model)+'</span><span class="badge base">对比模型</span></div>';const stage=document.createElement("div");stage.className="stage l5";stage.innerHTML='<div class="stage-h"><span class="step">②</span>过 L5 · 认知重写<span class="stat" data-role="stat">…</span></div><div class="difftext" data-role="body"><span class="calc">计算 diff…</span></div>';card.appendChild(stage);strip.appendChild(card);setTimeout(()=>{if(seq!==renderSeq)return;if(!value){stage.querySelector('[data-role="body"]').innerHTML='<div class="waitbox">暂无 L5 结果</div>';stage.querySelector('[data-role="stat"]').textContent="无结果";return}const diff=diffTokens(book.seg,value),body=stage.querySelector('[data-role="body"]');body.innerHTML=renderDiff(diff,value,"l5");renderMath(body);stage.querySelector('[data-role="stat"]').textContent="+"+diff.ins+" 新增 · −"+diff.del+" 删"},0)});
 }
 buildRail();
 const match=/book=(\d+)/.exec(location.hash);if(match){const found=BOOKS.findIndex(book=>book.idx===+match[1]);if(found>=0)cur=found}select(cur,false);
